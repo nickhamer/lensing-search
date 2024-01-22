@@ -15,6 +15,7 @@ kms_to_kpcs = 1.0 * (3.086 * 10**16) ** -1
 kms_to_kpcday = 1.0 * (3.086 * 10**16) ** -1 * 86400.0
 au_to_kpc = 4.848 * 10**-9
 
+# (15 min / 1825 days)^2
 transit15minSq = mpf('3.25786e-11')
 
 # set precision
@@ -226,7 +227,7 @@ def processPatch_quad_starTree(patch, duration):
     print('==== max displacements ====')    
     print('stars: %s' % np.sqrt(np.max((sphCoords - endPosSph)[:, 1]**2 + (sphCoords - endPosSph)[:, 2]**2)))
 
-    print('stars: %s' % np.sqrt(np.max((sphCoords_ffps - endPosSph_ffps)[:, 1]**2 + (sphCoords_ffps - endPosSph_ffps)[:, 2]**2)))
+    print('ffps: %s' % np.sqrt(np.max((sphCoords_ffps - endPosSph_ffps)[:, 1]**2 + (sphCoords_ffps - endPosSph_ffps)[:, 2]**2)))
     print('use these numbers to set the spherical search radius in the kdtree')
     print('============================')
     
@@ -384,7 +385,7 @@ def processPatch_quad_ffpTree(patch, duration):
     print('==== max displacement ====')    
     print('stars: %s' % np.sqrt(np.max((sphCoords - endPosSph)[:, 1]**2 + (sphCoords - endPosSph)[:, 2]**2)))
 
-    print('stars: %s' % np.sqrt(np.max((sphCoords_ffps - endPosSph_ffps)[:, 1]**2 + (sphCoords_ffps - endPosSph_ffps)[:, 2]**2)))
+    print('ffps: %s' % np.sqrt(np.max((sphCoords_ffps - endPosSph_ffps)[:, 1]**2 + (sphCoords_ffps - endPosSph_ffps)[:, 2]**2)))
     print('use these numbers to set the spherical search radius in the kdtree')
     print('============================')
     

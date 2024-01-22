@@ -6,12 +6,12 @@ some collision detection for use in microlensing simulation
 The search field is so small that the trig functions are all approximated as linear.
 As in, latitude and longitude are coordinates in a cartesian 2d space, and it checks to see if some circles cross.
 Those circles would be the einstein radius of the lens and the angular size of the star.
-Some coordinate conversion needed to apply the bodies' velocities before converting pack to spherical.
+Some coordinate conversion needed to apply the bodies' velocities before converting back to spherical.
 
 (ffp and pbh are used interchangeably in the code, both are the possible lenses)
 There are 2 equivalent functions:
-    processPatch_quad_starTree
-    processPatch_quad_ffpTree
+- processPatch_quad_starTree
+- processPatch_quad_ffpTree
 
 the difference being which of the populations fills out the kdtree. The larger population can go in the tree (which is fast),
 and the smaller population can be iterated over. It wouldn't be very much work to combine the functions into one and
