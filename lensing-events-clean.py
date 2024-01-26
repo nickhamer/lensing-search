@@ -204,7 +204,7 @@ def einstein_radius(d_lens, d_source, mass):
 
     if(np.isnan(theta_E_arcsec)):
         print(d_LS)
-        raise Exception('fucky wucky')
+        raise Exception('somethings gone wrong, probably precision lost')
 
     return(np.pi/180 * theta_E_arcsec/3600)
 
