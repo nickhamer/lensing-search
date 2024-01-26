@@ -15,7 +15,8 @@ kms_to_kpcs = 1.0 * (3.086 * 10**16) ** -1
 kms_to_kpcday = 1.0 * (3.086 * 10**16) ** -1 * 86400.0
 au_to_kpc = 4.848 * 10**-9
 
-# (15 min / 1825 days)^2
+# (15 min / 1825 days)^2 where 15 min is Roman's fiducial cadence
+# and 1825 days is Roman's fiducial observational baseline
 transit15minSq = mpf('3.25786e-11')
 
 # set precision
@@ -46,16 +47,21 @@ def cartesian_exact(rad, glat, glon):
 #endregion
 
 # this holds all the information about some circle with a linear trajectory
+# r is radius, p1 is initial center of circle, v is 2D velocity vector, t is duration
 # returns (circle1, circle2, rectangle points)
 def RRectPath(r, p1, v, t):
+	# p1 (p2) is center of circle at the beginning (end)
     p2 = p1 + v * t
 
+    # v is 2D vector of proper motion, if v = 0, then the shape is just a 
+    # stationary circle and zero-size rectangle
     if (v[0] == 0 and v[1] == 0):
         return ((p1, r), (p1, r), (p1, p1, p1, p1))
 
-
+    # unit vector perpendicular to trajectory
     uPerp = np.array([-v[1], v[0]]) / np.sqrt(np.dot(v,v))
 
+    # boundary points of rectangular portion
     rectPoints = (p1 + uPerp * r, p2 + uPerp * r, p2 - uPerp * r, p1 - uPerp * r)
 
     return ((p1, r), (p2, r), rectPoints)
@@ -77,7 +83,7 @@ def tSolSqDiff(r1, r2, x1, y1, vx1, vy1, x2, y2, vx2, vy2):
         vx2*y2,2)/
         (np.power(vx1,2) - 2*vx1*vx2 + np.power(vx2,2) + np.power(vy1,2) - 2*vy1*vy2 + 
         np.power(vy2,2)))):
-        # no bueno
+        # no solution
         return(np.nan)
     
 
@@ -98,6 +104,9 @@ def tSolSqDiff(r1, r2, x1, y1, vx1, vy1, x2, y2, vx2, vy2):
      np.power(vy1,2) + np.power(vy2,2),-2))
 
 # solve for the value of t when the circles are exactly touching
+# solutions correspond to the beginning of event (first overlap of two circles)
+# and end of event (when two circles stop overlapping)
+# tSol used in rrQuadSolve to find the beginning and end t for an event
 @make_precise
 def tSol(solutionIndex, r1, r2, x1, y1, vx1, vy1, x2, y2, vx2, vy2):
 
@@ -202,11 +211,16 @@ def einstein_radius(d_lens, d_source, mass):
 # take a patch as made in popsycle, make the kdtree from the stars, iterate over the ffps
 def processPatch_quad_starTree(patch, duration):
 
+	# current written with stars as sources and ffps as lenses
+	# however this can be rewritten to just say "sources" and "lenses"
+	# to be more general
     stars = patch[np.where(patch['rem_id'] == 0)]
-    ffps  = patch[np.where(patch['rem_id'] == 104)] # 104 for pbhs 105 for ffps
+    ffps  = patch[np.where(patch['rem_id'] == 104)] # 104 for pbhs 105 for ffps, our hard-coded PopSyCLE labels
 
+    # diagnostic: num sources, num lenses
     print('num stars: %d, ffps: %d' % (len(stars), len(ffps)))
     
+    # location of final point in spherical coords
     def end_movement_spherical_noCartesian(pVec, vVec):
         return spherical_exact(
             cartesian_exact(pVec['rad'], pVec['glat'], pVec['glon'])[0] + vVec['vx'] * kms_to_kpcday * duration,
@@ -214,12 +228,14 @@ def processPatch_quad_starTree(patch, duration):
             cartesian_exact(pVec['rad'], pVec['glat'], pVec['glon'])[2] + vVec['vz'] * kms_to_kpcday * duration
         )
 
+    # end position of sources and lenses respectively
     endPosSph = np.asarray(end_movement_spherical_noCartesian(stars[['rad','glat','glon']], stars[['vx', 'vy', 'vz']])).T
     endPosSph_ffps = np.asarray(end_movement_spherical_noCartesian(ffps[['rad','glat','glon']], ffps[['vx', 'vy', 'vz']])).T
 
     def to_radians(rgg):
         return (rgg['rad'], rgg['glat']*np.pi/180, rgg['glon']*np.pi/180)
 
+    # starting position of sources and lenses respectively
     sphCoords = np.asarray(to_radians(stars[['rad','glat','glon']])).T
     sphCoords_ffps = np.asarray(to_radians(ffps[['rad','glat','glon']])).T
     
@@ -234,30 +250,33 @@ def processPatch_quad_starTree(patch, duration):
 
 
 
-    maxSphRadius = 1e-6
+    maxSphRadius = 1e-6 # to do: find dynamically instead of by eye
     kdt = KDTree(sphCoords[:, 1:3])
-    print('number of guys in the kdtree: %d' % len(sphCoords[:, 1:3]))
+    print('number of objects in the kdtree: %d' % len(sphCoords[:, 1:3]))
 
     startTime = time.time()
-    totalCloseOnes = 0
-    lonelyBoys = 0
+    totalNearbyObjects = 0
+    totalIsolatedObjects = 0
     totalLensingEvents = 0
 
     resultData = {'transitData': []}
 
+    # assuming there are fewer lenses (ffps), we iterate over ffps but query sources from kdtree
+    # to do: choose whether to loop over sources or lenses automatically based on which is smaller
     for i, ffp in enumerate(ffps):
         # if (i%1000 == 0):
         #     print('i at %d' % i)
 
+        # get all sources nearby this lens (within hard-coded search radius)
         results = kdt.query_ball_point( (ffp['glat']*np.pi/180, ffp['glon']*np.pi/180), maxSphRadius)
 
-        
-        
+        # loop through nearby sources to see if trajectory contours overlap
+        # if so, find duration of event
         for res in results:
             # res is the id in the original list of the star
             if(ffp['rad'] < sphCoords[res][0]):
                 # lens is nearer than the source
-                totalCloseOnes += 1
+                totalNearbyObjects += 1
 
                 # starting coordiantes
                 ffpCoord  = (ffp['glat']*np.pi/180, ffp['glon']*np.pi/180)
@@ -269,12 +288,12 @@ def processPatch_quad_starTree(patch, duration):
                 d_ffp =  ffpCoord_end - ffpCoord
                 d_star = starCoord_end - starCoord
 
-                # this is probably here since the time in popsycle might go from t=-1/2 to t=1/2
+                # this is here since the time in popsycle might go from t=-1/2 to t=1/2
                 # so for purposes of comparing our output to theirs, make this the same.
                 ffpCoord = ffpCoord - d_ffp/2
                 starCoord = starCoord - d_star/2
 
-
+                # trajectory contours of lens and source respectively
                 rr_ffp = RRectPath(
                     einstein_radius(ffp['rad'], sphCoords[res][0], ffp['mass']),
                     np.array(ffpCoord),
@@ -293,14 +312,14 @@ def processPatch_quad_starTree(patch, duration):
                 # but it works fine, so i'm leaving it in
                 try:
                     if(np.isnan(deltaTSq)):
-                        # no collision
+                        # the two circles never overlap at the same time
                         continue
                 except:
                     # chill
                     pass
 
                 if (deltaTSq < transit15minSq):
-                    # too short
+                    # event is too short duration to be seen with 15 min cadence
                     continue
                 
                 # possible collision, now solve for the exact times where the circles are touching.
@@ -324,8 +343,10 @@ def processPatch_quad_starTree(patch, duration):
                     print('dStar: %s' % d_star)
                     '''
                     
+                    # start and end time of event
                     times_np = np.array(mp.matrix([t1,t2]).tolist(), dtype=np.float32)
 
+                    # output data to write to FITS file
                     resultData['transitData'].append({
                         'id_ffp': i,
                         'id_star': res,
@@ -342,13 +363,14 @@ def processPatch_quad_starTree(patch, duration):
                         print(resultData['transitData'][-1])
                         raise Exception('somehow star id larger than # of stars')
 
+        # there are no sources nearby this lens
         if len(results) == 0:
-            lonelyBoys += 1
+            totalIsolatedObjects += 1
 
     endTime = time.time()
-    print('search radius is %s rad' % maxSphRadius)
-    print('did search for transits in %s s' % (endTime-startTime))
-    print('total close stars found: %d. total lonely ffps found: %d' % (totalCloseOnes, lonelyBoys))
+    print('search radius is %s rad (adjust manually if necessary)' % maxSphRadius)
+    print('completed search for transit events in %s s' % (endTime-startTime))
+    print('total close stars found: %d. total lonely lenses found: %d' % (totalNearbyObjects, totalIsolatedObjects))
     print('total lensing events: %s' % totalLensingEvents)
 
     resultData['starCoordsStart'] = sphCoords[ [tr['id_star'] for tr in resultData['transitData']] ]
@@ -359,10 +381,13 @@ def processPatch_quad_starTree(patch, duration):
 
     return(resultData)
 
+
+# identical to the above function, but lenses outnumber sources, so lenses are in the kd-tree
+# and sources are looped over
 def processPatch_quad_ffpTree(patch, duration):
 
     stars = patch[np.where(patch['rem_id'] == 0)]
-    ffps  = patch[np.where(patch['rem_id'] == 104)] # 105 for ffps
+    ffps  = patch[np.where(patch['rem_id'] == 104)] # 105 for ffps, our hard-coded PopSyCLE ids
 
     print('num stars: %d, ffps: %d' % (len(stars), len(ffps)))
     
@@ -397,8 +422,8 @@ def processPatch_quad_ffpTree(patch, duration):
     print('number of guys in the kdtree: %d' % len(sphCoords_ffps[:, 1:3]))
 
     startTime = time.time()
-    totalCloseOnes = 0
-    lonelyBoys = 0
+    totalNearbyObjects = 0
+    totalIsolatedObjects = 0
     totalLensingEvents = 0
 
     resultData = {'transitData': []}
@@ -423,7 +448,7 @@ def processPatch_quad_ffpTree(patch, duration):
             # res is the id in the original list of the ffps
             if(star['rad'] > sphCoords_ffps[res][0]):
                 # lens is nearer than the source
-                totalCloseOnes += 1
+                totalNearbyObjects += 1
 
                 # starting coordiantes
                 ffpCoord  = sphCoords_ffps[res, 1:3]
@@ -517,12 +542,12 @@ def processPatch_quad_ffpTree(patch, duration):
                         raise Exception('somehow star id larger than # of stars')
 
         if len(results) == 0:
-            lonelyBoys += 1
+            totalIsolatedObjects += 1
 
     endTime = time.time()
     print('search radius is %s rad' % maxSphRadius)
     print('did search for transits in %s s' % (endTime-startTime))
-    print('total close stars found: %d. total lonely ffps found: %d' % (totalCloseOnes, lonelyBoys))
+    print('total close stars found: %d. total lonely ffps found: %d' % (totalNearbyObjects, totalIsolatedObjects))
     print('total lensing events: %s' % totalLensingEvents)
 
     resultData['starCoordsStart'] = sphCoords[ [tr['id_star'] for tr in resultData['transitData']] ]
@@ -533,6 +558,9 @@ def processPatch_quad_ffpTree(patch, duration):
 
     return(resultData)
 
+
+# takes in an hdf5 file from PopSyCLE with catalog of all objects and performs analysis
+# writes output as json
 def computeEvents(hdf5_filename):
     hf = h5py.File(hdf5_filename, "r")
 
@@ -552,12 +580,13 @@ def computeEvents(hdf5_filename):
     with open(jsonFilename, 'w') as f:
         json.dump(results, f, cls=NumpyEncoder)
 
+# actual run step
+# to do: make filename an input
 computeEvents('pbh-binl9b9_earth_01_fdm_5_long.h5')
-#computeEvents('pbh-binl2b2.h5')
 
 
-# not really sure what this was for. possibly for running this code on
-# the output of popsycle's lensing search to see if it finds the same.
+# useful diagnostic function to compare to what PopSyCLE finds as events in
+# a given patch. we find the same events exactly but faster
 def convertFits(fn, relevantIdx=104):
     duration = 1825
     
